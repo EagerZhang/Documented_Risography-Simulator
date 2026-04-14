@@ -1,5 +1,7 @@
 # Riso Simulator
 
+View the live version at: 
+
 A web-based Risograph print studio. Compose multi-layer prints using authentic Riso ink colors, paper stocks, geometric shapes, text, and uploaded images — then download your result or submit it to the collection.
 
 ## Features
