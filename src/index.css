@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Bebas+Neue&family=DM+Serif+Display:ital@0;1&family=Inter:wght@400;500;600&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap');
+
+@import "tailwindcss";
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Space Mono', monospace;
+  background: #1a1a1a;
+  color: #f0ede8;
+  overflow: hidden;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #2a2a2a;
+}
+::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #777;
+}
+
+/* Canvas container */
+.canvas-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.canvas-wrapper canvas {
+  display: block;
+}
+
+/* Grain overlay — canvas element sitting above Fabric canvas, no pointer events.
+   White dropout dots with normal blending: invisible on white paper,
+   visible as "missing ink" spots on colored ink areas. */
+.grain-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  mix-blend-mode: normal;
+  opacity: 0.65;
+}
