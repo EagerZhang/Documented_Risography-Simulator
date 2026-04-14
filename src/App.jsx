@@ -8,10 +8,10 @@ import RisoCanvas   from './components/Canvas/RisoCanvas';
 import LayerPanel   from './components/LayerPanel/LayerPanel';
 import SubmitModal  from './components/SubmitModal';
 
-const DEFAULT_INK = RISO_COLORS[2].hex; // Bright Red
+const DEFAULT_INK = RISO_COLORS[0].hex; // Fluorescent Pink
 
 export default function App() {
-  const [canvasSize,  setCanvasSize]  = useState('a4');
+  const [canvasSize,  setCanvasSize]  = useState('letter-v');
   const [inkColor,    setInkColor]    = useState(DEFAULT_INK);
   const [submitOpen,  setSubmitOpen]  = useState(false);
   const [toast,       setToast]       = useState(null);
@@ -38,6 +38,8 @@ export default function App() {
     moveInkLayerUp,
     moveInkLayerDown,
     recolorActive,
+    recolorActiveWithRecipe,
+    previewActiveColor,
     setActiveOpacity,
     setActiveContrast,
     downloadPng,
@@ -75,7 +77,7 @@ export default function App() {
     setTimeout(() => setToast(null), 3000);
   }, []);
 
-  // ── Color change: recolor active object OR set next-object color ─────────────
+  // ── Color change: recolor active object or set next-object color ─────────────
   const handleInkColorChange = useCallback((color) => {
     setInkColor(color);
     if (activeId) recolorActive(color);
@@ -109,6 +111,8 @@ export default function App() {
           onAddImage={addImage}
           inkColor={inkColor}
           onInkColorChange={handleInkColorChange}
+          onApplySmudge={recolorActiveWithRecipe}
+          onPreviewSmudge={previewActiveColor}
           activeObjectType={activeObjectType}
           activeObjectProps={activeObjectProps}
           onOpacityChange={setActiveOpacity}

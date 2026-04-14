@@ -1,17 +1,8 @@
 export const RISO_COLORS = [
-  { id: 'black',             name: 'Black',             hex: '#000000' },
-  { id: 'medium-blue',       name: 'Medium Blue',       hex: '#0078BF' },
-  { id: 'bright-red',        name: 'Bright Red',        hex: '#F15060' },
-  { id: 'fluorescent-pink',  name: 'Fluoro Pink',       hex: '#FF48B0' },
-  { id: 'yellow',            name: 'Yellow',            hex: '#F7FF00' },
-  { id: 'orange',            name: 'Orange',            hex: '#FF6C2F' },
-  { id: 'kelly-green',       name: 'Kelly Green',       hex: '#67B346' },
-  { id: 'sunflower',         name: 'Sunflower',         hex: '#FFB511' },
-  { id: 'aqua',              name: 'Aqua',              hex: '#5EC8E5' },
-  { id: 'mint',              name: 'Mint',              hex: '#82D8D5' },
-  { id: 'orchid',            name: 'Orchid',            hex: '#BB76CF' },
-  { id: 'teal',              name: 'Teal',              hex: '#00838A' },
-  { id: 'hunter-green',      name: 'Hunter Green',      hex: '#1B5C2C' },
+  { id: 'black',            name: 'Black',            hex: '#000000' },
+  { id: 'cyan',             name: 'Cyan',             hex: '#00AEEF' },
+  { id: 'sunflower',        name: 'Sunflower',        hex: '#FFB511' },
+  { id: 'fluorescent-pink', name: 'Fluorescent Pink', hex: '#FF48B0' },
 ];
 
 export const PAPER_OPTIONS = [
@@ -27,11 +18,10 @@ export const PAPER_OPTIONS = [
 ];
 
 export const CANVAS_SIZES = [
-  { id: 'a4',     name: 'A4',      width: 794,  height: 1123 },
-  { id: 'a4-l',   name: 'A4 Land', width: 1123, height: 794  },
-  { id: 'a3',     name: 'A3',      width: 1123, height: 1587 },
-  { id: 'square', name: 'Square',  width: 900,  height: 900  },
-  { id: 'letter', name: 'Letter',  width: 816,  height: 1056 },
+  { id: 'letter-v',  name: 'Letter Vertical',   width: 816,  height: 1056 },
+  { id: 'letter-h',  name: 'Letter Horizontal',  width: 1056, height: 816  },
+  { id: 'tabloid-v', name: 'Tabloid Vertical',   width: 1056, height: 1632 },
+  { id: 'tabloid-h', name: 'Tabloid Horizontal', width: 1632, height: 1056 },
 ];
 
 export const RISO_FONTS = [

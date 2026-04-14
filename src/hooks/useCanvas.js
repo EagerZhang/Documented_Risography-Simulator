@@ -83,9 +83,11 @@ function extractInkLayers(canvas, inkLayerOrder, activeColorHex) {
     });
 }
 
-export function useCanvas(canvasSize = 'a4') {
-  const canvasRef  = useRef(null);
-  const fabricRef  = useRef(null);
+export function useCanvas(canvasSize = 'letter-v') {
+  const canvasRef         = useRef(null);
+  const fabricRef         = useRef(null);
+  const inkLayerOrderRef  = useRef([]); // SYNC source-of-truth for layer order
+  const inkLayersRef      = useRef([]); // SYNC source-of-truth for layer descriptors
 
   const [inkLayers,       setInkLayers]       = useState([]);
   const [inkLayerOrder,   setInkLayerOrder]   = useState([]); // hex[], bottom→top
@@ -99,27 +101,23 @@ export function useCanvas(canvasSize = 'a4') {
 
   const syncInkLayers = useCallback((orderOverride) => {
     if (!fabricRef.current) return;
-    setInkLayerOrder((prev) => {
-      const order = orderOverride ?? prev;
-      setInkLayers((currentLayers) => {
-        const activeObj = fabricRef.current.getActiveObject();
-        const activeHex = activeObj?._risoColor ?? null;
-        const next = extractInkLayers(fabricRef.current, order, activeHex);
-        // If nothing changed structurally, return same ref to avoid re-render
-        if (JSON.stringify(next) === JSON.stringify(currentLayers)) return currentLayers;
-        return next;
-      });
-      return order;
-    });
-  }, []);
 
-  /**
-   * Ensure a color exists in inkLayerOrder. If it's new, append it on top.
-   * Returns the updated order array.
-   */
-  const ensureColorInOrder = useCallback((hex, prevOrder) => {
-    if (prevOrder.includes(hex)) return prevOrder;
-    return [...prevOrder, hex];
+    // Resolve the new order synchronously using the ref — no state-setter read needed
+    const order = orderOverride !== undefined ? orderOverride : inkLayerOrderRef.current;
+
+    // Update refs SYNCHRONOUSLY so pushHistory() always reads fresh values
+    inkLayerOrderRef.current = order;
+    const activeObj = fabricRef.current.getActiveObject();
+    const activeHex = activeObj?._risoColor ?? null;
+    const layers = extractInkLayers(fabricRef.current, order, activeHex);
+    inkLayersRef.current = layers;
+
+    // Schedule React state updates for rendering
+    setInkLayerOrder(order);
+    setInkLayers((current) => {
+      if (JSON.stringify(layers) === JSON.stringify(current)) return current;
+      return layers;
+    });
   }, []);
 
   // ─── Canvas init ─────────────────────────────────────────────────────────────
@@ -137,11 +135,12 @@ export function useCanvas(canvasSize = 'a4') {
     });
     fabricRef.current = fc;
 
-    const onChanged = () => syncInkLayers();
+    const onChanged  = () => syncInkLayers();
+    const onModified = () => syncInkLayers();
 
     fc.on('object:added',    onChanged);
     fc.on('object:removed',  onChanged);
-    fc.on('object:modified', onChanged);
+    fc.on('object:modified', onModified);
 
     const onSelect = (obj) => {
       setActiveId(obj?.id ?? null);
@@ -164,7 +163,7 @@ export function useCanvas(canvasSize = 'a4') {
     return () => {
       fc.off('object:added',    onChanged);
       fc.off('object:removed',  onChanged);
-      fc.off('object:modified', onChanged);
+      fc.off('object:modified', onModified);
       fc.dispose();
       fabricRef.current = null;
     };
@@ -190,102 +189,129 @@ export function useCanvas(canvasSize = 'a4') {
 
   // ─── Add helpers ─────────────────────────────────────────────────────────────
 
-  const applyRisoStyle = useCallback((obj, risoColor, label) => {
+  const applyRisoStyle = useCallback((obj, risoColor, label, opacityOverride) => {
     obj.id          = `obj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     obj._risoColor  = risoColor;
     obj._label      = label;
     obj._brightness = 0;
     obj._contrast   = 0;
     obj.set({
-      opacity:                  INK_OPACITY,
+      opacity:                  opacityOverride ?? INK_OPACITY,
       globalCompositeOperation: 'multiply',
     });
   }, []);
 
   /** After adding an object, ensure its color is in the order and re-stack. */
   const afterAdd = useCallback((obj) => {
-    const hex = obj._risoColor;
-    setInkLayerOrder((prev) => {
-      const next = ensureColorInOrder(hex, prev);
-      reorderCanvasObjects(fabricRef.current, next);
-      syncInkLayers(next);
-      return next;
-    });
-  }, [ensureColorInOrder, syncInkLayers]);
+    const hex  = obj._risoColor;
+    const prev = inkLayerOrderRef.current;
+    const next = prev.includes(hex) ? prev : [...prev, hex];
+    if (fabricRef.current) reorderCanvasObjects(fabricRef.current, next);
+    syncInkLayers(next);
+  }, [syncInkLayers]);
 
-  const addShape = useCallback((shapeType, risoColor) => {
+  /** Build one Fabric shape object at the given canvas center position. */
+  const buildShape = useCallback((shapeType, risoColor, cx, cy) => {
+    switch (shapeType) {
+      case 'rect':
+        return new fabric.Rect({ left: cx - 60, top: cy - 60, width: 120, height: 120, fill: risoColor });
+      case 'circle':
+        return new fabric.Circle({ left: cx - 60, top: cy - 60, radius: 60, fill: risoColor });
+      case 'triangle':
+        return new fabric.Triangle({ left: cx - 60, top: cy - 60, width: 120, height: 120, fill: risoColor });
+      case 'line':
+        return new fabric.Line([cx - 80, cy, cx + 80, cy], {
+          stroke: risoColor, strokeWidth: 4, fill: 'transparent',
+        });
+      default:
+        return null;
+    }
+  }, []);
+
+  const addShape = useCallback((shapeType, risoColor, recipe) => {
     if (!fabricRef.current) return;
     const fc = fabricRef.current;
     const cx = fc.width  / 2;
     const cy = fc.height / 2;
-    let obj;
 
-    switch (shapeType) {
-      case 'rect':
-        obj = new fabric.Rect({ left: cx - 60, top: cy - 60, width: 120, height: 120, fill: risoColor });
-        break;
-      case 'circle':
-        obj = new fabric.Circle({ left: cx - 60, top: cy - 60, radius: 60, fill: risoColor });
-        break;
-      case 'triangle':
-        obj = new fabric.Triangle({ left: cx - 60, top: cy - 60, width: 120, height: 120, fill: risoColor });
-        break;
-      case 'line':
-        obj = new fabric.Line([cx - 80, cy, cx + 80, cy], {
-          stroke: risoColor, strokeWidth: 4, fill: 'transparent',
-        });
-        break;
-      default:
-        return;
-    }
+    // Multi-ink recipe: one shape per ink component at the same position
+    const components = recipe && recipe.length > 1 ? recipe : [{ hex: risoColor, weight: null }];
 
-    applyRisoStyle(obj, risoColor, shapeType);
-    fc.add(obj);
-    fc.setActiveObject(obj);
-    afterAdd(obj);
-  }, [applyRisoStyle, afterAdd]);
+    let lastObj = null;
+    components.forEach(({ hex, weight }, idx) => {
+      const obj = buildShape(shapeType, hex, cx, cy);
+      if (!obj) return;
+      applyRisoStyle(obj, hex, shapeType, weight ?? undefined);
+      fc.add(obj);
+      if (idx === components.length - 1) lastObj = obj;
+      afterAdd(obj);
+    });
 
-  const addText = useCallback((text, fontFamily, risoColor, fontSize = 48) => {
+    if (lastObj) fc.setActiveObject(lastObj);
+  }, [buildShape, applyRisoStyle, afterAdd]);
+
+  const addText = useCallback((text, fontFamily, risoColor, fontSize = 48, recipe) => {
     if (!fabricRef.current) return;
     const fc  = fabricRef.current;
-    const obj = new fabric.IText(text || 'Type here', {
-      left:       fc.width  / 2 - 100,
-      top:        fc.height / 2 - 30,
-      fontFamily,
-      fontSize,
-      fill:       risoColor,
+    const left = fc.width  / 2 - 100;
+    const top  = fc.height / 2 - 30;
+    const label = `"${text || 'text'}"`;
+
+    const components = recipe && recipe.length > 1 ? recipe : [{ hex: risoColor, weight: null }];
+
+    let lastObj = null;
+    components.forEach(({ hex, weight }, idx) => {
+      const obj = new fabric.IText(text || 'Type here', {
+        left, top, fontFamily, fontSize, fill: hex,
+      });
+      applyRisoStyle(obj, hex, label, weight ?? undefined);
+      fc.add(obj);
+      if (idx === components.length - 1) lastObj = obj;
+      afterAdd(obj);
     });
 
-    applyRisoStyle(obj, risoColor, `"${text || 'text'}"`);
-    fc.add(obj);
-    fc.setActiveObject(obj);
-    afterAdd(obj);
+    if (lastObj) fc.setActiveObject(lastObj);
   }, [applyRisoStyle, afterAdd]);
 
-  const addImage = useCallback((dataUrl, risoColor, originalDataUrl) => {
+  const addImage = useCallback((dataUrl, risoColor, originalDataUrl, recipe) => {
     if (!fabricRef.current) return;
-    const fc = fabricRef.current;
+    const fc      = fabricRef.current;
+    const origSrc = originalDataUrl ?? dataUrl;
 
-    fabric.Image.fromURL(dataUrl).then((img) => {
-      const maxW  = fc.width  * 0.6;
-      const maxH  = fc.height * 0.6;
-      const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+    const components = recipe && recipe.length > 1 ? recipe : [{ hex: risoColor, weight: null }];
 
-      img.set({
-        left:   fc.width  / 2 - (img.width  * scale) / 2,
-        top:    fc.height / 2 - (img.height * scale) / 2,
-        scaleX: scale,
-        scaleY: scale,
+    // For each ink component, recolorize the original image and add a Fabric image
+    const addComponent = (colorizedUrl, hex, weight, isLast) => {
+      fabric.Image.fromURL(colorizedUrl).then((img) => {
+        if (!fabricRef.current) return;
+        const maxW  = fc.width  * 0.6;
+        const maxH  = fc.height * 0.6;
+        const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+        img.set({
+          left:   fc.width  / 2 - (img.width  * scale) / 2,
+          top:    fc.height / 2 - (img.height * scale) / 2,
+          scaleX: scale,
+          scaleY: scale,
+        });
+        img._originalSrc = origSrc;
+        applyRisoStyle(img, hex, 'image', weight ?? undefined);
+        fc.add(img);
+        if (isLast) fc.setActiveObject(img);
+        afterAdd(img);
       });
+    };
 
-      // Store the original (uncolorized) pixels so we can re-colorize later
-      img._originalSrc = originalDataUrl ?? dataUrl;
-
-      applyRisoStyle(img, risoColor, 'image');
-      fc.add(img);
-      fc.setActiveObject(img);
-      afterAdd(img);
-    });
+    if (components.length === 1) {
+      // Single ink — use the already-colorized dataUrl
+      addComponent(dataUrl, components[0].hex, components[0].weight, true);
+    } else {
+      // Multi-ink recipe — re-colorize original for each component
+      components.forEach(({ hex, weight }, idx) => {
+        recolorizeDataUrl(origSrc, hex).then((recolored) => {
+          addComponent(recolored, hex, weight, idx === components.length - 1);
+        });
+      });
+    }
   }, [applyRisoStyle, afterAdd]);
 
   // ─── Ink layer operations ────────────────────────────────────────────────────
@@ -311,38 +337,30 @@ export function useCanvas(canvasSize = 'a4') {
     const objects = fc.getObjects().filter((o) => o._risoColor === colorHex);
     objects.forEach((o) => fc.remove(o));
     fc.renderAll();
-
-    setInkLayerOrder((prev) => {
-      const next = prev.filter((h) => h !== colorHex);
-      syncInkLayers(next);
-      return next;
-    });
+    const next = inkLayerOrderRef.current.filter((h) => h !== colorHex);
+    syncInkLayers(next);
   }, [syncInkLayers]);
 
   /** Move an ink layer one step up (toward the top / last printed) */
   const moveInkLayerUp = useCallback((colorHex) => {
-    setInkLayerOrder((prev) => {
-      const idx = prev.indexOf(colorHex);
-      if (idx === -1 || idx === prev.length - 1) return prev;
-      const next = [...prev];
-      [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
-      reorderCanvasObjects(fabricRef.current, next);
-      syncInkLayers(next);
-      return next;
-    });
+    const prev = inkLayerOrderRef.current;
+    const idx  = prev.indexOf(colorHex);
+    if (idx === -1 || idx === prev.length - 1) return;
+    const next = [...prev];
+    [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+    if (fabricRef.current) reorderCanvasObjects(fabricRef.current, next);
+    syncInkLayers(next);
   }, [syncInkLayers]);
 
   /** Move an ink layer one step down (toward the bottom / first printed) */
   const moveInkLayerDown = useCallback((colorHex) => {
-    setInkLayerOrder((prev) => {
-      const idx = prev.indexOf(colorHex);
-      if (idx <= 0) return prev;
-      const next = [...prev];
-      [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
-      reorderCanvasObjects(fabricRef.current, next);
-      syncInkLayers(next);
-      return next;
-    });
+    const prev = inkLayerOrderRef.current;
+    const idx  = prev.indexOf(colorHex);
+    if (idx <= 0) return;
+    const next = [...prev];
+    [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
+    if (fabricRef.current) reorderCanvasObjects(fabricRef.current, next);
+    syncInkLayers(next);
   }, [syncInkLayers]);
 
   // ─── Individual object operations ────────────────────────────────────────────
@@ -358,17 +376,12 @@ export function useCanvas(canvasSize = 'a4') {
     fc.remove(obj);
     fc.renderAll();
 
-    // If that was the last object of this color, remove from order
+    // If that was the last object of this color, remove it from order
     const remaining = fc.getObjects().filter((o) => o._risoColor === hex);
-    if (remaining.length === 0) {
-      setInkLayerOrder((prev) => {
-        const next = prev.filter((h) => h !== hex);
-        syncInkLayers(next);
-        return next;
-      });
-    } else {
-      syncInkLayers();
-    }
+    const next = remaining.length === 0
+      ? inkLayerOrderRef.current.filter((h) => h !== hex)
+      : inkLayerOrderRef.current;
+    syncInkLayers(next);
   }, [syncInkLayers]);
 
   // ─── Per-object adjustments ──────────────────────────────────────────────────
@@ -446,21 +459,138 @@ export function useCanvas(canvasSize = 'a4') {
       setActiveColor(newColor);
       finalizeRecolor(obj, oldColor, newColor);
     }
-  }, [ensureColorInOrder, syncInkLayers]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [syncInkLayers]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Lightweight visual-only preview: changes the object's displayed fill/stroke
+   * WITHOUT touching _risoColor, inkLayers, or any React state.
+   * Used by the smudge panel to show a live preview before committing.
+   * Skipped silently for image objects (pixel recolor is async/expensive).
+   */
+  const previewActiveColor = useCallback((hex) => {
+    if (!fabricRef.current) return;
+    const obj = fabricRef.current.getActiveObject();
+    if (!obj || obj.type === 'image') return;
+    if (obj.type === 'line') {
+      obj.set({ stroke: hex });
+    } else {
+      obj.set({ fill: hex });
+    }
+    fabricRef.current.renderAll();
+  }, []);
 
   /** Shared post-recolor bookkeeping: update inkLayerOrder and sync layers */
   const finalizeRecolor = useCallback((obj, oldColor, newColor) => {
-    setInkLayerOrder((prev) => {
-      let next = ensureColorInOrder(newColor, prev);
-      const oldColorStillUsed = fabricRef.current
-        .getObjects()
-        .some((o) => o !== obj && o._risoColor === oldColor);
-      if (!oldColorStillUsed) next = next.filter((h) => h !== oldColor);
-      reorderCanvasObjects(fabricRef.current, next);
-      syncInkLayers(next);
-      return next;
-    });
-  }, [ensureColorInOrder, syncInkLayers]);
+    const prev = inkLayerOrderRef.current;
+    let next   = prev.includes(newColor) ? prev : [...prev, newColor];
+    const oldColorStillUsed = fabricRef.current
+      .getObjects()
+      .some((o) => o !== obj && o._risoColor === oldColor);
+    if (!oldColorStillUsed) next = next.filter((h) => h !== oldColor);
+    if (fabricRef.current) reorderCanvasObjects(fabricRef.current, next);
+    syncInkLayers(next);
+  }, [syncInkLayers]);
+
+  /**
+   * Replace the active canvas object with N copies — one per recipe ink component.
+   * Each copy keeps the same position, scale, and shape but gets a pure ink color
+   * at weight-based opacity, matching how real Riso layers are printed separately.
+   */
+  const recolorActiveWithRecipe = useCallback(async (recipe) => {
+    if (!fabricRef.current || !recipe?.length) return;
+    const fc  = fabricRef.current;
+    const obj = fc.getActiveObject();
+    if (!obj) return;
+
+    const label   = obj._label ?? obj.type;
+    const origSrc = obj._originalSrc ?? null;
+    const oldColor = obj._risoColor;
+
+    // Shared positional properties to copy onto every new object
+    const transforms = {
+      left:  obj.left,
+      top:   obj.top,
+      scaleX: obj.scaleX,
+      scaleY: obj.scaleY,
+      angle: obj.angle,
+      flipX: obj.flipX,
+      flipY: obj.flipY,
+    };
+
+    fc.discardActiveObject();
+    fc.remove(obj);
+
+    const components = recipe.filter((c) => c.weight > 0);
+
+    if (obj.type === 'image' && origSrc) {
+      // Re-colorize the original image for each ink, then add each as a new Fabric image
+      const promises = components.map(({ hex, weight }) =>
+        recolorizeDataUrl(origSrc, hex).then((colored) =>
+          fabric.Image.fromURL(colored).then((img) => ({ img, hex, weight }))
+        )
+      );
+
+      const results = await Promise.all(promises);
+      results.forEach(({ img, hex, weight }, idx) => {
+        img.set(transforms);
+        img._originalSrc = origSrc;
+        applyRisoStyle(img, hex, label, weight);
+        fc.add(img);
+        if (idx === results.length - 1) fc.setActiveObject(img);
+        afterAdd(img);
+      });
+    } else {
+      // Clone the original object N times (returns Promises in Fabric 7)
+      const clones = await Promise.all(
+        components.map(() => obj.clone())
+      );
+
+      clones.forEach((cloned, idx) => {
+        const { hex, weight } = components[idx];
+        cloned.set(transforms);
+        applyRisoStyle(cloned, hex, label, weight);
+        if (cloned.type === 'line') {
+          cloned.set({ stroke: hex });
+        } else {
+          cloned.set({ fill: hex });
+        }
+        fc.add(cloned);
+        if (idx === clones.length - 1) fc.setActiveObject(cloned);
+        afterAdd(cloned);
+      });
+
+      // Remove the old color from the layer order if nothing else uses it
+      // (afterAdd already called syncInkLayers; this handles stale-color cleanup)
+      const stillUsed = fc.getObjects().some((o) => o._risoColor === oldColor);
+      if (!stillUsed) {
+        const next = inkLayerOrderRef.current.filter((h) => h !== oldColor);
+        syncInkLayers(next);
+      }
+    }
+
+    fc.renderAll();
+  }, [applyRisoStyle, afterAdd]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Keyboard shortcuts ───────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const onKey = (e) => {
+      const active  = fabricRef.current?.getActiveObject();
+      const tag     = document.activeElement?.tagName?.toLowerCase();
+      const inInput = ['input', 'textarea', 'select'].includes(tag);
+
+      // Delete / Backspace — remove selected object (guard: not text-editing, not form input)
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !inInput && !active?.isEditing) {
+        if (active?.id) {
+          e.preventDefault();
+          removeLayer(active.id);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [removeLayer]);
 
   // ─── Export ───────────────────────────────────────────────────────────────────
 
@@ -516,6 +646,8 @@ export function useCanvas(canvasSize = 'a4') {
     moveInkLayerUp,
     moveInkLayerDown,
     recolorActive,
+    recolorActiveWithRecipe,
+    previewActiveColor,
     setActiveOpacity,
     setActiveBrightness,
     setActiveContrast,

@@ -70,12 +70,7 @@ export default function ImageUpload({ onAddImage, inkColor, onInkColorChange }) 
         {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
       </div>
 
-      <div>
-        <p className="text-xs text-zinc-400 uppercase tracking-widest mb-1">
-          Ink Color applied to image:
-        </p>
-        <ColorPicker value={inkColor} onChange={onInkColorChange} />
-      </div>
+      <ColorPicker value={inkColor} onChange={onInkColorChange} />
 
       <p className="text-[10px] text-zinc-500 leading-relaxed">
         Dark areas of the image will render with more ink. Light areas become transparent.
