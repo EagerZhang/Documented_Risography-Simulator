@@ -3,10 +3,20 @@ import * as fabric from 'fabric';
 import { CANVAS_SIZES, RISO_COLORS, applyBrightnessToHex } from '../utils/risoColors';
 import { recolorizeDataUrl } from '../utils/imageProcessor';
 import { generateGrainCanvas } from '../utils/generateGrain';
+import { loadBackgroundUrls } from '../utils/canvasBackgrounds';
 
 const INK_OPACITY = 0.82;
 
-const DEFAULT_PROPS = { opacity: INK_OPACITY, brightness: 0, contrast: 0 };
+const DEFAULT_PROPS = {
+  opacity: INK_OPACITY,
+  brightness: 0,
+  contrast: 0,
+  fontSize: 48,
+  charSpacing: 0,
+  lineHeight: 1.16,
+  strokeWidth: 4,
+  strokeObject: false,
+};
 
 /**
  * Re-apply Brightness + Contrast filters to a Fabric Image object.
@@ -22,16 +32,26 @@ function applyImageFilters(img, brightness, contrast) {
 
 /** Read stored adjustment values from a Fabric object, with defaults. */
 function readProps(obj) {
+  const strokeObject = obj?.type === 'line' || obj?._strokeOnly;
   return {
-    opacity:    obj?.opacity    ?? INK_OPACITY,
-    brightness: obj?._brightness ?? 0,
-    contrast:   obj?._contrast   ?? 0,
+    opacity:     obj?.opacity      ?? INK_OPACITY,
+    brightness:  obj?._brightness  ?? 0,
+    contrast:    obj?._contrast    ?? 0,
+    fontSize:    obj?.fontSize     ?? 48,
+    charSpacing: obj?.charSpacing  ?? 0,
+    lineHeight:  obj?.lineHeight   ?? 1.16,
+    strokeWidth: obj?.strokeWidth  ?? 4,
+    strokeObject,
   };
 }
 
 /** Look up a color name from the palette, falling back to the hex string */
 function colorName(hex) {
   return RISO_COLORS.find((c) => c.hex.toLowerCase() === hex.toLowerCase())?.name ?? hex;
+}
+
+function safeName(s) {
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
 /**
@@ -83,11 +103,47 @@ function extractInkLayers(canvas, inkLayerOrder, activeColorHex) {
     });
 }
 
+/**
+ * Convert any source image into pure black ink while preserving alpha.
+ * This guarantees background templates always read as black silhouettes.
+ */
+function convertImageToBlackDataUrl(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const cvs = document.createElement('canvas');
+      cvs.width = img.width;
+      cvs.height = img.height;
+      const ctx = cvs.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, cvs.width, cvs.height);
+      const d = imageData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] === 0) continue;
+        d[i] = 0;
+        d[i + 1] = 0;
+        d[i + 2] = 0;
+      }
+      ctx.putImageData(imageData, 0, 0);
+      resolve(cvs.toDataURL('image/png'));
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
 export function useCanvas(canvasSize = 'letter-v') {
   const canvasRef         = useRef(null);
   const fabricRef         = useRef(null);
   const inkLayerOrderRef  = useRef([]); // SYNC source-of-truth for layer order
   const inkLayersRef      = useRef([]); // SYNC source-of-truth for layer descriptors
+  const clipboardRef      = useRef(null); // last copied Fabric object
+  const backgroundUrlsRef = useRef([]);
+  const backgroundIndexRef = useRef(0);
+
+  const [fabricReady,     setFabricReady]     = useState(false);
+  const [backgroundUrls, setBackgroundUrls] = useState([]);
+  const [backgroundIndex, setBackgroundIndex] = useState(0);
 
   const [inkLayers,       setInkLayers]       = useState([]);
   const [inkLayerOrder,   setInkLayerOrder]   = useState([]); // hex[], bottom→top
@@ -95,7 +151,7 @@ export function useCanvas(canvasSize = 'letter-v') {
   const [activeColor,     setActiveColor]     = useState(null);
   const [activeObjectType, setActiveObjectType] = useState(null);
   const [activeObjectProps, setActiveObjectProps] = useState(DEFAULT_PROPS);
-  const [paperColor,      setPaperColor]      = useState('#FFFFFF');
+  const [multiSelectRect, setMultiSelectRect] = useState(null); // {left,top,width,height} canvas px
 
   // ─── Sync helpers ────────────────────────────────────────────────────────────
 
@@ -132,8 +188,20 @@ export function useCanvas(canvasSize = 'letter-v') {
       height:                 size.height,
       backgroundColor:        '#FFFFFF',
       preserveObjectStacking: true,
+      selectionColor:         'rgba(0, 0, 0, 0.08)',
+      selectionBorderColor:   '#000000',
+      selectionLineWidth:     1,
     });
     fabricRef.current = fc;
+
+    // Make free-transform controls high-contrast for light UI theme.
+    fabric.Object.prototype.set({
+      borderColor:       '#000000',
+      cornerColor:       '#000000',
+      cornerStrokeColor: '#FFFFFF',
+      transparentCorners: false,
+      borderScaleFactor: 1.25,
+    });
 
     const onChanged  = () => syncInkLayers();
     const onModified = () => syncInkLayers();
@@ -142,41 +210,118 @@ export function useCanvas(canvasSize = 'letter-v') {
     fc.on('object:removed',  onChanged);
     fc.on('object:modified', onModified);
 
-    const onSelect = (obj) => {
+    const onSelect = (e) => {
+      const sel = fc.getActiveObject();
+      if (!sel) return;
+
+      // Multi-selection: expose bounding rect for the Align button
+      if (sel.type === 'activeSelection') {
+        setMultiSelectRect(sel.getBoundingRect());
+      } else {
+        setMultiSelectRect(null);
+      }
+
+      const obj = e?.selected?.[0] ?? sel;
+      if (obj && (obj.type === 'line' || obj._strokeOnly)) {
+        obj.set('strokeUniform', true);
+      }
       setActiveId(obj?.id ?? null);
       setActiveColor(obj?._risoColor ?? null);
-      setActiveObjectType(obj?.type ?? null);
+      setActiveObjectType(sel.type ?? null);
       setActiveObjectProps(readProps(obj));
       syncInkLayers();
     };
 
-    fc.on('selection:created', (e) => onSelect(e.selected?.[0]));
-    fc.on('selection:updated', (e) => onSelect(e.selected?.[0]));
+    // Keep multiSelectRect fresh while dragging a multi-selection
+    const onMoving = () => {
+      const sel = fc.getActiveObject();
+      if (sel?.type === 'activeSelection') {
+        setMultiSelectRect(sel.getBoundingRect());
+      }
+    };
+
+    fc.on('selection:created', onSelect);
+    fc.on('selection:updated', onSelect);
+    fc.on('object:moving',    onMoving);
     fc.on('selection:cleared', () => {
       setActiveId(null);
       setActiveColor(null);
       setActiveObjectType(null);
       setActiveObjectProps(DEFAULT_PROPS);
+      setMultiSelectRect(null);
       syncInkLayers();
     });
 
+    setFabricReady(true);
+
     return () => {
+      setFabricReady(false);
       fc.off('object:added',    onChanged);
       fc.off('object:removed',  onChanged);
       fc.off('object:modified', onModified);
+      fc.off('object:moving',   onMoving);
       fc.dispose();
       fabricRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ─── Paper color ─────────────────────────────────────────────────────────────
+  // ─── Load background manifest / fallback URLs ───────────────────────────────
 
   useEffect(() => {
-    if (!fabricRef.current) return;
-    fabricRef.current.set('backgroundColor', paperColor);
-    fabricRef.current.renderAll();
-  }, [paperColor]);
+    let cancelled = false;
+    loadBackgroundUrls().then((urls) => {
+      if (cancelled || !urls.length) return;
+      backgroundUrlsRef.current = urls;
+      setBackgroundUrls(urls);
+      setBackgroundIndex(Math.floor(Math.random() * urls.length));
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    backgroundUrlsRef.current = backgroundUrls;
+  }, [backgroundUrls]);
+
+  useEffect(() => {
+    backgroundIndexRef.current = backgroundIndex;
+  }, [backgroundIndex]);
+
+  // ─── Apply Fabric canvas background image (black + full-height centered) ─────
+
+  useEffect(() => {
+    if (!fabricReady || !fabricRef.current || !backgroundUrls.length) return;
+    const fc  = fabricRef.current;
+    const normalizedIndex =
+      ((backgroundIndex % backgroundUrls.length) + backgroundUrls.length) % backgroundUrls.length;
+    const url = backgroundUrls[normalizedIndex];
+
+    convertImageToBlackDataUrl(url)
+      .then((blackUrl) => fabric.Image.fromURL(blackUrl))
+      .then((img) => {
+        if (!fabricRef.current || fabricRef.current !== fc) return;
+        if (normalizedIndex !== backgroundIndexRef.current) return;
+        const w = fc.width;
+        const h = fc.height;
+        const scale = h / img.height;
+        const scaledW = img.width * scale;
+        img.set({
+          originX: 'left',
+          originY: 'top',
+          scaleX: scale,
+          scaleY: scale,
+          left:   (w - scaledW) / 2,
+          top:    0,
+          selectable: false,
+          evented: false,
+        });
+        fc.set('backgroundImage', img);
+        fc.renderAll();
+      })
+      .catch((err) => {
+        console.warn('[riso] background failed:', url, err);
+      });
+  }, [fabricReady, backgroundUrls, backgroundIndex, canvasSize]);
 
   // ─── Canvas resize ───────────────────────────────────────────────────────────
 
@@ -219,9 +364,53 @@ export function useCanvas(canvasSize = 'letter-v') {
         return new fabric.Circle({ left: cx - 60, top: cy - 60, radius: 60, fill: risoColor });
       case 'triangle':
         return new fabric.Triangle({ left: cx - 60, top: cy - 60, width: 120, height: 120, fill: risoColor });
+      case 'rect-outline': {
+        const obj = new fabric.Rect({
+          left: cx - 60,
+          top: cy - 60,
+          width: 120,
+          height: 120,
+          fill: 'transparent',
+          stroke: risoColor,
+          strokeWidth: 4,
+          strokeUniform: true,
+        });
+        obj._strokeOnly = true;
+        return obj;
+      }
+      case 'circle-outline': {
+        const obj = new fabric.Circle({
+          left: cx - 60,
+          top: cy - 60,
+          radius: 60,
+          fill: 'transparent',
+          stroke: risoColor,
+          strokeWidth: 4,
+          strokeUniform: true,
+        });
+        obj._strokeOnly = true;
+        return obj;
+      }
+      case 'triangle-outline': {
+        const obj = new fabric.Triangle({
+          left: cx - 60,
+          top: cy - 60,
+          width: 120,
+          height: 120,
+          fill: 'transparent',
+          stroke: risoColor,
+          strokeWidth: 4,
+          strokeUniform: true,
+        });
+        obj._strokeOnly = true;
+        return obj;
+      }
       case 'line':
         return new fabric.Line([cx - 80, cy, cx + 80, cy], {
-          stroke: risoColor, strokeWidth: 4, fill: 'transparent',
+          stroke: risoColor,
+          strokeWidth: 4,
+          fill: 'transparent',
+          strokeUniform: true,
         });
       default:
         return null;
@@ -250,27 +439,22 @@ export function useCanvas(canvasSize = 'letter-v') {
     if (lastObj) fc.setActiveObject(lastObj);
   }, [buildShape, applyRisoStyle, afterAdd]);
 
-  const addText = useCallback((text, fontFamily, risoColor, fontSize = 48, recipe) => {
+  const addText = useCallback((text, fontFamily, risoColor, fontSize = 48, charSpacing = 0, lineHeight = 1.16) => {
     if (!fabricRef.current) return;
     const fc  = fabricRef.current;
     const left = fc.width  / 2 - 100;
     const top  = fc.height / 2 - 30;
     const label = `"${text || 'text'}"`;
 
-    const components = recipe && recipe.length > 1 ? recipe : [{ hex: risoColor, weight: null }];
-
-    let lastObj = null;
-    components.forEach(({ hex, weight }, idx) => {
-      const obj = new fabric.IText(text || 'Type here', {
-        left, top, fontFamily, fontSize, fill: hex,
-      });
-      applyRisoStyle(obj, hex, label, weight ?? undefined);
-      fc.add(obj);
-      if (idx === components.length - 1) lastObj = obj;
-      afterAdd(obj);
+    const obj = new fabric.IText(text || 'Type here', {
+      left, top, fontFamily, fontSize, fill: risoColor,
+      charSpacing,
+      lineHeight,
     });
-
-    if (lastObj) fc.setActiveObject(lastObj);
+    applyRisoStyle(obj, risoColor, label);
+    fc.add(obj);
+    fc.setActiveObject(obj);
+    afterAdd(obj);
   }, [applyRisoStyle, afterAdd]);
 
   const addImage = useCallback((dataUrl, risoColor, originalDataUrl, recipe) => {
@@ -384,6 +568,21 @@ export function useCanvas(canvasSize = 'letter-v') {
     syncInkLayers(next);
   }, [syncInkLayers]);
 
+  /** Remove all drawable objects while keeping the background template intact. */
+  const clearCanvas = useCallback(() => {
+    if (!fabricRef.current) return;
+    const fc = fabricRef.current;
+    fc.discardActiveObject();
+    fc.getObjects().forEach((obj) => fc.remove(obj));
+    fc.renderAll();
+    setActiveId(null);
+    setActiveColor(null);
+    setActiveObjectType(null);
+    setActiveObjectProps(DEFAULT_PROPS);
+    setMultiSelectRect(null);
+    syncInkLayers([]);
+  }, [syncInkLayers]);
+
   // ─── Per-object adjustments ──────────────────────────────────────────────────
 
   const setActiveOpacity = useCallback((value) => {
@@ -405,7 +604,8 @@ export function useCanvas(canvasSize = 'letter-v') {
       applyImageFilters(obj, value, obj._contrast ?? 0);
     } else {
       const displayColor = applyBrightnessToHex(obj._risoColor, value);
-      obj.set(obj.type === 'line' ? { stroke: displayColor } : { fill: displayColor });
+      const strokeOnly = obj.type === 'line' || obj._strokeOnly;
+      obj.set(strokeOnly ? { stroke: displayColor } : { fill: displayColor });
     }
     fabricRef.current.renderAll();
     setActiveObjectProps((prev) => ({ ...prev, brightness: value }));
@@ -419,6 +619,48 @@ export function useCanvas(canvasSize = 'letter-v') {
     applyImageFilters(obj, obj._brightness ?? 0, value);
     fabricRef.current.renderAll();
     setActiveObjectProps((prev) => ({ ...prev, contrast: value }));
+  }, []);
+
+  const setActiveFontSize = useCallback((value) => {
+    if (!fabricRef.current) return;
+    const obj = fabricRef.current.getActiveObject();
+    if (!obj || (obj.type !== 'i-text' && obj.type !== 'text')) return;
+    obj.set('fontSize', value);
+    fabricRef.current.renderAll();
+    setActiveObjectProps((prev) => ({ ...prev, fontSize: value }));
+  }, []);
+
+  const setActiveCharSpacing = useCallback((value) => {
+    if (!fabricRef.current) return;
+    const obj = fabricRef.current.getActiveObject();
+    if (!obj || (obj.type !== 'i-text' && obj.type !== 'text')) return;
+    obj.set('charSpacing', value);
+    fabricRef.current.renderAll();
+    setActiveObjectProps((prev) => ({ ...prev, charSpacing: value }));
+  }, []);
+
+  const setActiveLineHeight = useCallback((value) => {
+    if (!fabricRef.current) return;
+    const obj = fabricRef.current.getActiveObject();
+    if (!obj || (obj.type !== 'i-text' && obj.type !== 'text')) return;
+    obj.set('lineHeight', value);
+    fabricRef.current.renderAll();
+    setActiveObjectProps((prev) => ({ ...prev, lineHeight: value }));
+  }, []);
+
+  const setActiveStrokeWidth = useCallback((value) => {
+    if (!fabricRef.current) return;
+    const obj = fabricRef.current.getActiveObject();
+    if (!obj) return;
+    const strokeObject = obj.type === 'line' || obj._strokeOnly;
+    if (!strokeObject) return;
+    obj.set({
+      strokeWidth: value,
+      strokeUniform: true,
+    });
+    if (obj._strokeOnly) obj.set({ fill: 'transparent' });
+    fabricRef.current.renderAll();
+    setActiveObjectProps((prev) => ({ ...prev, strokeWidth: value, strokeObject: true }));
   }, []);
 
   /** Re-color the active canvas object */
@@ -450,7 +692,7 @@ export function useCanvas(canvasSize = 'letter-v') {
     } else {
       obj._risoColor = newColor;
       const displayColor = applyBrightnessToHex(newColor, obj._brightness ?? 0);
-      if (obj.type === 'line') {
+      if (obj.type === 'line' || obj._strokeOnly) {
         obj.set({ stroke: displayColor });
       } else {
         obj.set({ fill: displayColor });
@@ -460,24 +702,6 @@ export function useCanvas(canvasSize = 'letter-v') {
       finalizeRecolor(obj, oldColor, newColor);
     }
   }, [syncInkLayers]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /**
-   * Lightweight visual-only preview: changes the object's displayed fill/stroke
-   * WITHOUT touching _risoColor, inkLayers, or any React state.
-   * Used by the smudge panel to show a live preview before committing.
-   * Skipped silently for image objects (pixel recolor is async/expensive).
-   */
-  const previewActiveColor = useCallback((hex) => {
-    if (!fabricRef.current) return;
-    const obj = fabricRef.current.getActiveObject();
-    if (!obj || obj.type === 'image') return;
-    if (obj.type === 'line') {
-      obj.set({ stroke: hex });
-    } else {
-      obj.set({ fill: hex });
-    }
-    fabricRef.current.renderAll();
-  }, []);
 
   /** Shared post-recolor bookkeeping: update inkLayerOrder and sync layers */
   const finalizeRecolor = useCallback((obj, oldColor, newColor) => {
@@ -491,106 +715,171 @@ export function useCanvas(canvasSize = 'letter-v') {
     syncInkLayers(next);
   }, [syncInkLayers]);
 
+  // ─── Multi-select align ──────────────────────────────────────────────────────
+
   /**
-   * Replace the active canvas object with N copies — one per recipe ink component.
-   * Each copy keeps the same position, scale, and shape but gets a pure ink color
-   * at weight-based opacity, matching how real Riso layers are printed separately.
+   * Move every object in the current multi-selection so that all their
+   * top-left corners coincide at the top-left of the overall selection bbox.
+   * Identical shapes in different colors will overlap perfectly afterwards.
    */
-  const recolorActiveWithRecipe = useCallback(async (recipe) => {
-    if (!fabricRef.current || !recipe?.length) return;
-    const fc  = fabricRef.current;
-    const obj = fc.getActiveObject();
-    if (!obj) return;
+  const alignSelectedItems = useCallback(() => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    const sel = fc.getActiveObject();
+    if (!sel || sel.type !== 'activeSelection') return;
 
-    const label   = obj._label ?? obj.type;
-    const origSrc = obj._originalSrc ?? null;
-    const oldColor = obj._risoColor;
+    // Save the target top-left BEFORE discarding (canvas coordinates)
+    const selBBox    = sel.getBoundingRect();
+    const targetLeft = selBBox.left;
+    const targetTop  = selBBox.top;
 
-    // Shared positional properties to copy onto every new object
-    const transforms = {
-      left:  obj.left,
-      top:   obj.top,
-      scaleX: obj.scaleX,
-      scaleY: obj.scaleY,
-      angle: obj.angle,
-      flipX: obj.flipX,
-      flipY: obj.flipY,
-    };
-
+    // Collect object references, then discard so canvas coords are restored
+    const objs = [...sel.getObjects()];
     fc.discardActiveObject();
-    fc.remove(obj);
 
-    const components = recipe.filter((c) => c.weight > 0);
-
-    if (obj.type === 'image' && origSrc) {
-      // Re-colorize the original image for each ink, then add each as a new Fabric image
-      const promises = components.map(({ hex, weight }) =>
-        recolorizeDataUrl(origSrc, hex).then((colored) =>
-          fabric.Image.fromURL(colored).then((img) => ({ img, hex, weight }))
-        )
-      );
-
-      const results = await Promise.all(promises);
-      results.forEach(({ img, hex, weight }, idx) => {
-        img.set(transforms);
-        img._originalSrc = origSrc;
-        applyRisoStyle(img, hex, label, weight);
-        fc.add(img);
-        if (idx === results.length - 1) fc.setActiveObject(img);
-        afterAdd(img);
+    // Move each object so its own top-left aligns to targetLeft / targetTop
+    objs.forEach((obj) => {
+      const bbox = obj.getBoundingRect();
+      obj.set({
+        left: obj.left + (targetLeft - bbox.left),
+        top:  obj.top  + (targetTop  - bbox.top),
       });
-    } else {
-      // Clone the original object N times (returns Promises in Fabric 7)
-      const clones = await Promise.all(
-        components.map(() => obj.clone())
-      );
+      obj.setCoords();
+    });
 
-      clones.forEach((cloned, idx) => {
-        const { hex, weight } = components[idx];
-        cloned.set(transforms);
-        applyRisoStyle(cloned, hex, label, weight);
-        if (cloned.type === 'line') {
-          cloned.set({ stroke: hex });
-        } else {
-          cloned.set({ fill: hex });
-        }
-        fc.add(cloned);
-        if (idx === clones.length - 1) fc.setActiveObject(cloned);
-        afterAdd(cloned);
-      });
-
-      // Remove the old color from the layer order if nothing else uses it
-      // (afterAdd already called syncInkLayers; this handles stale-color cleanup)
-      const stillUsed = fc.getObjects().some((o) => o._risoColor === oldColor);
-      if (!stillUsed) {
-        const next = inkLayerOrderRef.current.filter((h) => h !== oldColor);
-        syncInkLayers(next);
-      }
-    }
-
+    // Re-create the selection so the user can keep working with it
+    const newSel = new fabric.ActiveSelection(objs, { canvas: fc });
+    fc.setActiveObject(newSel);
     fc.renderAll();
-  }, [applyRisoStyle, afterAdd]); // eslint-disable-line react-hooks/exhaustive-deps
+    setMultiSelectRect(newSel.getBoundingRect());
+    syncInkLayers();
+  }, [syncInkLayers]);
+
+  // ─── Randomize layer shift ───────────────────────────────────────────────────
+
+  /**
+   * Apply an independent random offset (dx, dy) within ±amount pixels to
+   * every ink color layer, simulating Riso misregistration between passes.
+   */
+  const randomizeLayerShift = useCallback((amount) => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    // Each unique ink color gets its own random (dx, dy)
+    const offsets = new Map();
+    for (const hex of inkLayerOrderRef.current) {
+      const dx = (Math.random() * 2 - 1) * amount;
+      const dy = (Math.random() * 2 - 1) * amount;
+      offsets.set(hex, { dx, dy });
+    }
+    fc.getObjects().forEach((obj) => {
+      const o = offsets.get(obj._risoColor);
+      if (!o) return;
+      obj.set({ left: obj.left + o.dx, top: obj.top + o.dy });
+      obj.setCoords();
+    });
+    fc.renderAll();
+    syncInkLayers();
+  }, [syncInkLayers]);
+
+  const setBackgroundRandom = useCallback(() => {
+    const n = backgroundUrlsRef.current.length;
+    if (n < 1) return;
+    let next;
+    let guard = 0;
+    do {
+      next = Math.floor(Math.random() * n);
+      guard += 1;
+    } while (next === backgroundIndexRef.current && n > 1 && guard < 16);
+    setBackgroundIndex(next);
+  }, []);
+
+  const setBackgroundNext = useCallback(() => {
+    const n = backgroundUrlsRef.current.length;
+    if (n < 1) return;
+    setBackgroundIndex((i) => (i + 1) % n);
+  }, []);
+
+  const setBackgroundPrev = useCallback(() => {
+    const n = backgroundUrlsRef.current.length;
+    if (n < 1) return;
+    setBackgroundIndex((i) => (i - 1 + n) % n);
+  }, []);
 
   // ─── Keyboard shortcuts ───────────────────────────────────────────────────────
 
   useEffect(() => {
-    const onKey = (e) => {
+    const onKey = async (e) => {
       const active  = fabricRef.current?.getActiveObject();
       const tag     = document.activeElement?.tagName?.toLowerCase();
       const inInput = ['input', 'textarea', 'select'].includes(tag);
 
-      // Delete / Backspace — remove selected object (guard: not text-editing, not form input)
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !inInput && !active?.isEditing) {
+      if (inInput || active?.isEditing) return;
+
+      // Delete / Backspace — remove selected object
+      if (e.key === 'Delete' || e.key === 'Backspace') {
         if (active?.id) {
           e.preventDefault();
           removeLayer(active.id);
         }
       }
+
+      // Cmd+C / Ctrl+C — copy selected object into clipboard ref
+      if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
+        if (active) {
+          e.preventDefault();
+          clipboardRef.current = await active.clone();
+          // Clone may drop custom metadata on some object types; preserve explicitly.
+          clipboardRef.current._risoColor = active._risoColor;
+          clipboardRef.current._label = active._label;
+          clipboardRef.current._originalSrc = active._originalSrc;
+          clipboardRef.current._brightness = active._brightness;
+          clipboardRef.current._contrast = active._contrast;
+          clipboardRef.current._strokeOnly = active._strokeOnly;
+        }
+      }
+
+      // Cmd+V / Ctrl+V — paste copy at the exact same position
+      if ((e.metaKey || e.ctrlKey) && e.key === 'v') {
+        if (!clipboardRef.current || !fabricRef.current) return;
+        e.preventDefault();
+
+        // Clone again so each paste is independent
+        const pasted = await clipboardRef.current.clone();
+
+        // Preserve all custom riso properties from the original
+        pasted.id          = `obj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        pasted._risoColor  = clipboardRef.current._risoColor;
+        pasted._label      = clipboardRef.current._label;
+        pasted._originalSrc = clipboardRef.current._originalSrc;
+        pasted._brightness = clipboardRef.current._brightness;
+        pasted._contrast   = clipboardRef.current._contrast;
+        pasted._strokeOnly = clipboardRef.current._strokeOnly;
+
+        if (pasted._strokeOnly) {
+          const strokeColor = applyBrightnessToHex(
+            pasted._risoColor ?? '#000000',
+            pasted._brightness ?? 0,
+          );
+          pasted.set({
+            fill: 'transparent',
+            stroke: strokeColor,
+            strokeWidth: pasted.strokeWidth ?? 4,
+            strokeUniform: true,
+          });
+        }
+        if (pasted.type === 'line') {
+          pasted.set({ strokeUniform: true });
+        }
+
+        fabricRef.current.add(pasted);
+        fabricRef.current.setActiveObject(pasted);
+        afterAdd(pasted);
+      }
     };
 
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [removeLayer]);
+  }, [removeLayer, afterAdd]);
 
   // ─── Export ───────────────────────────────────────────────────────────────────
 
@@ -598,22 +887,25 @@ export function useCanvas(canvasSize = 'letter-v') {
     if (!fabricRef.current) return null;
     const fc = fabricRef.current;
 
-    // Ensure everything is rendered onto the lower canvas before we read it
     fc.renderAll();
 
-    // Composite grain onto the Fabric output on an offscreen canvas.
-    // Drawing from lowerCanvasEl is synchronous — no Image.onload needed.
+    // lowerCanvasEl is scaled by devicePixelRatio internally by Fabric, so its
+    // actual pixel dimensions are larger than fc.width / fc.height.
+    // Use the element's real pixel size to capture the full image.
+    const actualW = fc.lowerCanvasEl.width;
+    const actualH = fc.lowerCanvasEl.height;
+
     const offscreen = document.createElement('canvas');
-    offscreen.width  = fc.width;
-    offscreen.height = fc.height;
+    offscreen.width  = actualW;
+    offscreen.height = actualH;
     const ctx = offscreen.getContext('2d');
 
     ctx.drawImage(fc.lowerCanvasEl, 0, 0);
 
-    // Overlay white dropout grain — invisible on white paper, visible on ink
+    // Overlay white dropout grain at the same physical resolution
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 0.65;
-    ctx.drawImage(generateGrainCanvas(fc.width, fc.height), 0, 0);
+    ctx.drawImage(generateGrainCanvas(actualW, actualH), 0, 0);
 
     return offscreen.toDataURL('image/png');
   }, []);
@@ -627,6 +919,79 @@ export function useCanvas(canvasSize = 'letter-v') {
     a.click();
   }, [exportPng]);
 
+  const downloadLayeredPngs = useCallback(async () => {
+    if (!fabricRef.current) return 0;
+    const fc = fabricRef.current;
+    const allObjects = fc.getObjects();
+    if (!allObjects.length) return 0;
+
+    const usedHexes = inkLayerOrderRef.current.filter((hex) =>
+      allObjects.some((obj) => obj._risoColor === hex),
+    );
+    if (!usedHexes.length) return 0;
+
+    let downloadCount = 0;
+    for (let i = 0; i < usedHexes.length; i += 1) {
+      const hex = usedHexes[i];
+      const layerObjects = allObjects.filter((obj) => obj._risoColor === hex);
+      if (!layerObjects.length) continue;
+
+      const el = document.createElement('canvas');
+      const width = fc.getWidth();
+      const height = fc.getHeight();
+      el.width = width;
+      el.height = height;
+      const sc = new fabric.StaticCanvas(el, { width, height, backgroundColor: 'transparent' });
+
+      for (const obj of layerObjects) {
+        const clone = await obj.clone();
+        const isStrokeOnly =
+          obj.type === 'line'
+          || obj._strokeOnly
+          || (
+            !!obj.stroke
+            && (obj.fill === 'transparent' || obj.fill === '' || obj.fill == null)
+          );
+
+        // Render all layer exports as grayscale for print prep.
+        if (clone.type === 'image') {
+          const existing = clone.filters ?? [];
+          clone.filters = [...existing, new fabric.filters.Grayscale()];
+          clone.applyFilters();
+        } else if (isStrokeOnly) {
+          clone.set({
+            stroke: '#000000',
+            fill: 'transparent',
+          });
+        } else {
+          clone.set({
+            fill: '#000000',
+            stroke: clone.stroke ? '#000000' : clone.stroke,
+          });
+        }
+
+        clone.set({ globalCompositeOperation: 'source-over' });
+        sc.add(clone);
+      }
+
+      sc.renderAll();
+      const dataUrl = sc.toDataURL({
+        format: 'png',
+        multiplier: window.devicePixelRatio || 1,
+      });
+      sc.dispose();
+
+      const name = safeName(colorName(hex) || `layer-${i + 1}`);
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `riso-layer-${String(i + 1).padStart(2, '0')}-${name}.png`;
+      a.click();
+      downloadCount += 1;
+    }
+
+    return downloadCount;
+  }, []);
+
   return {
     canvasRef,
     fabricRef,
@@ -635,23 +1000,32 @@ export function useCanvas(canvasSize = 'letter-v') {
     activeColor,
     activeObjectType,
     activeObjectProps,
-    paperColor,
-    setPaperColor,
+    setBackgroundRandom,
+    setBackgroundNext,
+    setBackgroundPrev,
+    backgroundUrlsLength: backgroundUrls.length,
     addShape,
     addText,
     addImage,
     removeLayer,
+    clearCanvas,
     removeInkLayer,
     toggleInkLayer,
     moveInkLayerUp,
     moveInkLayerDown,
     recolorActive,
-    recolorActiveWithRecipe,
-    previewActiveColor,
+    alignSelectedItems,
+    multiSelectRect,
+    randomizeLayerShift,
     setActiveOpacity,
     setActiveBrightness,
     setActiveContrast,
+    setActiveFontSize,
+    setActiveCharSpacing,
+    setActiveLineHeight,
+    setActiveStrokeWidth,
     exportPng,
     downloadPng,
+    downloadLayeredPngs,
   };
 }

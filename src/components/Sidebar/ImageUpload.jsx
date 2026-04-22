@@ -1,9 +1,17 @@
 import { useRef, useState } from 'react';
-import { colorizeImage } from '../../utils/imageProcessor';
+import { colorizeImage, cmykSplitImage } from '../../utils/imageProcessor';
 import ColorPicker from './ColorPicker';
+
+const CMYK_LABELS = [
+  { color: '#00AEEF', label: 'C' },
+  { color: '#FF48B0', label: 'M' },
+  { color: '#FFB511', label: 'Y' },
+  { color: '#000000', label: 'K' },
+];
 
 export default function ImageUpload({ onAddImage, inkColor, onInkColorChange }) {
   const inputRef   = useRef(null);
+  const [mode,     setMode]     = useState('single');
   const [loading,  setLoading]  = useState(false);
   const [preview,  setPreview]  = useState(null);
   const [error,    setError]    = useState('');
@@ -17,15 +25,22 @@ export default function ImageUpload({ onAddImage, inkColor, onInkColorChange }) 
     setLoading(true);
 
     try {
-      const { colorizedDataUrl, originalDataUrl } = await colorizeImage(file, inkColor);
-      setPreview(colorizedDataUrl);
-      onAddImage(colorizedDataUrl, inkColor, originalDataUrl);
+      if (mode === 'cmyk') {
+        const channels = await cmykSplitImage(file);
+        setPreview(channels[0].dataUrl);
+        for (const { dataUrl, risoColor } of channels) {
+          onAddImage(dataUrl, risoColor, dataUrl);
+        }
+      } else {
+        const { colorizedDataUrl, originalDataUrl } = await colorizeImage(file, inkColor);
+        setPreview(colorizedDataUrl);
+        onAddImage(colorizedDataUrl, inkColor, originalDataUrl);
+      }
     } catch (err) {
       console.error(err);
       setError('Failed to process image.');
     } finally {
       setLoading(false);
-      // Reset input so the same file can be re-uploaded
       if (inputRef.current) inputRef.current.value = '';
     }
   };
@@ -38,23 +53,61 @@ export default function ImageUpload({ onAddImage, inkColor, onInkColorChange }) 
 
   return (
     <div className="space-y-4">
+      {/* Mode toggle */}
       <div>
-        <p className="text-xs text-zinc-400 uppercase tracking-widest mb-2">Upload PNG</p>
+        <p className="text-[10px] text-black/80 uppercase tracking-wider mb-2">Import Mode</p>
+        <div className="grid grid-cols-2 gap-1">
+          {[
+            { id: 'single', label: 'Single Ink' },
+            { id: 'cmyk',   label: '4-Channel' },
+          ].map(({ id, label }) => (
+            <button
+              key={id}
+              onClick={() => { setMode(id); setPreview(null); }}
+              className={`py-1.5 text-xs rounded transition-colors ${
+                mode === id
+                  ? 'bg-[#e4e4e4] text-black font-medium border border-black'
+                  : 'bg-[#eeeeee] text-black/70 hover:bg-black hover:text-white border border-black'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
 
+      {/* CMYK channel legend */}
+      {mode === 'cmyk' && (
+        <div className="flex items-center gap-1.5">
+          {CMYK_LABELS.map(({ color, label }) => (
+            <div key={label} className="flex items-center gap-1">
+              <span
+                className="w-3 h-3 rounded-sm inline-block border border-black"
+                style={{ backgroundColor: color }}
+              />
+              <span className="text-[10px] text-black/80">{label}</span>
+            </div>
+          ))}
+          <span className="text-[10px] text-black/60 ml-1">auto-mapped</span>
+        </div>
+      )}
+
+      {/* Drop zone */}
+      <div>
         <div
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDrop}
           onClick={() => inputRef.current?.click()}
-          className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-zinc-600 hover:border-amber-400 rounded p-4 cursor-pointer transition-colors text-center"
+          className="flex flex-col items-center justify-center gap-2 border border-dashed border-black rounded-lg p-4 cursor-pointer transition-colors text-center bg-[#eeeeee]"
         >
           {loading ? (
-            <span className="text-zinc-400 text-sm">Processing…</span>
+            <span className="text-black/80 text-sm">Processing…</span>
           ) : preview ? (
             <img src={preview} alt="preview" className="max-h-20 object-contain opacity-70" />
           ) : (
             <>
               <span className="text-3xl">📁</span>
-              <span className="text-xs text-zinc-400">Click or drag PNG here</span>
+              <span className="text-xs text-black/60">Click or drag PNG here</span>
             </>
           )}
         </div>
@@ -67,13 +120,18 @@ export default function ImageUpload({ onAddImage, inkColor, onInkColorChange }) 
           onChange={(e) => handleFile(e.target.files?.[0])}
         />
 
-        {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
+        {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
       </div>
 
-      <ColorPicker value={inkColor} onChange={onInkColorChange} />
+      {/* Color picker — only in single ink mode */}
+      {mode === 'single' && (
+        <ColorPicker value={inkColor} onChange={onInkColorChange} />
+      )}
 
-      <p className="text-[10px] text-zinc-500 leading-relaxed">
-        Dark areas of the image will render with more ink. Light areas become transparent.
+      <p className="text-[10px] text-black/60 leading-relaxed">
+        {mode === 'cmyk'
+          ? 'Image colors are split into C, M, Y, K channels and mapped to 4 ink layers automatically.'
+          : 'Dark areas of the image will render with more ink. Light areas become transparent.'}
       </p>
     </div>
   );

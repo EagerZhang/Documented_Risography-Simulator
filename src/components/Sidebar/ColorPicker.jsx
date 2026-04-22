@@ -3,14 +3,14 @@ import { RISO_COLORS } from '../../utils/risoColors';
 export default function ColorPicker({ value, onChange, label = 'Ink Color' }) {
   return (
     <div>
-      <p className="text-xs text-zinc-400 uppercase tracking-widest mb-2">{label}</p>
+      <p className="text-[10px] text-black/80 uppercase tracking-wider mb-2">{label}</p>
       <div className="grid grid-cols-4 gap-1.5">
         {RISO_COLORS.map((color) => (
           <button
             key={color.id}
             title={color.name}
             onClick={() => onChange(color.hex)}
-            className="relative w-full aspect-square rounded-sm transition-transform hover:scale-110 focus:outline-none"
+            className="relative w-full aspect-square rounded-md transition-transform hover:scale-105 focus:outline-none border border-black"
             style={{ backgroundColor: color.hex }}
           >
             {value === color.hex && (
@@ -24,12 +24,12 @@ export default function ColorPicker({ value, onChange, label = 'Ink Color' }) {
           </button>
         ))}
       </div>
-      <div className="mt-2 flex items-center gap-2">
+      <div className="mt-2 flex items-center gap-2 rounded-md border border-black bg-[#eeeeee] px-2 py-1.5">
         <div
-          className="w-5 h-5 rounded-sm border border-zinc-600 flex-shrink-0"
+          className="w-4 h-4 rounded-sm border border-black flex-shrink-0"
           style={{ backgroundColor: value }}
         />
-        <span className="text-xs text-zinc-300 font-mono">{value}</span>
+        <span className="text-[11px] text-black/80 font-mono">{value}</span>
       </div>
     </div>
   );

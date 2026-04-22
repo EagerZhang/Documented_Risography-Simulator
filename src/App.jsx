@@ -6,14 +6,12 @@ import ActionBar    from './components/ActionBar';
 import ToolPanel    from './components/Sidebar/ToolPanel';
 import RisoCanvas   from './components/Canvas/RisoCanvas';
 import LayerPanel   from './components/LayerPanel/LayerPanel';
-import SubmitModal  from './components/SubmitModal';
 
 const DEFAULT_INK = RISO_COLORS[0].hex; // Fluorescent Pink
 
 export default function App() {
-  const [canvasSize,  setCanvasSize]  = useState('letter-v');
+  const canvasSize = 'letter-v';
   const [inkColor,    setInkColor]    = useState(DEFAULT_INK);
-  const [submitOpen,  setSubmitOpen]  = useState(false);
   const [toast,       setToast]       = useState(null);
 
   // Canvas scale: fit canvas into available center area
@@ -27,23 +25,31 @@ export default function App() {
     activeColor,
     activeObjectType,
     activeObjectProps,
-    paperColor,
-    setPaperColor,
+    setBackgroundRandom,
+    setBackgroundNext,
+    setBackgroundPrev,
+    backgroundUrlsLength,
     addShape,
     addText,
     addImage,
     removeLayer,
+    clearCanvas,
     removeInkLayer,
     toggleInkLayer,
     moveInkLayerUp,
     moveInkLayerDown,
     recolorActive,
-    recolorActiveWithRecipe,
-    previewActiveColor,
+    alignSelectedItems,
+    multiSelectRect,
+    randomizeLayerShift,
     setActiveOpacity,
     setActiveContrast,
+    setActiveFontSize,
+    setActiveCharSpacing,
+    setActiveLineHeight,
+    setActiveStrokeWidth,
     downloadPng,
-    exportPng,
+    downloadLayeredPngs,
   } = useCanvas(canvasSize);
 
   // ── Compute scale to fit canvas in center pane ───────────────────────────────
@@ -51,7 +57,7 @@ export default function App() {
     const recalculate = () => {
       if (!centerRef.current) return;
       const size    = CANVAS_SIZES.find((s) => s.id === canvasSize) || CANVAS_SIZES[0];
-      const padding = 48;
+      const padding = 96;
       const availW  = centerRef.current.clientWidth  - padding;
       const availH  = centerRef.current.clientHeight - padding;
       const scaleW  = availW / size.width;
@@ -89,49 +95,63 @@ export default function App() {
     showToast('Downloaded!', 'success');
   }, [downloadPng, showToast]);
 
+  const handleDownloadLayers = useCallback(async () => {
+    const count = await downloadLayeredPngs();
+    if (count > 0) showToast(`Downloaded ${count} layered PNG${count > 1 ? 's' : ''}.`, 'success');
+    else showToast('No layer content to export.', 'info');
+  }, [downloadLayeredPngs, showToast]);
+
+  const handleQuestionsClick = useCallback(() => {
+    window.open(
+      'https://www.uscis.gov/sites/default/files/document/questions-and-answers/100q.pdf',
+      '_blank',
+      'noopener,noreferrer',
+    );
+  }, []);
+
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-zinc-950">
+    <div className="flex flex-col h-screen overflow-hidden bg-[#eeeeee]">
       {/* ── Top bar ── */}
       <ActionBar
-        canvasSize={canvasSize}
-        onCanvasSizeChange={setCanvasSize}
         onDownload={handleDownload}
-        onOpenSubmit={() => setSubmitOpen(true)}
-        layerCount={inkLayers.length}
+        onDownloadLayers={handleDownloadLayers}
       />
 
-      {/* ── Main three-column layout ── */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* ── Main three-zone layout ── */}
+      <div className="flex flex-1 overflow-hidden gap-4 px-4 pb-4 pt-4">
         {/* Left: tool panel */}
         <ToolPanel
-          paperColor={paperColor}
-          onPaperChange={setPaperColor}
           onAddShape={addShape}
           onAddText={addText}
           onAddImage={addImage}
           inkColor={inkColor}
           onInkColorChange={handleInkColorChange}
-          onApplySmudge={recolorActiveWithRecipe}
-          onPreviewSmudge={previewActiveColor}
           activeObjectType={activeObjectType}
           activeObjectProps={activeObjectProps}
           onOpacityChange={setActiveOpacity}
           onContrastChange={setActiveContrast}
+          onFontSizeChange={setActiveFontSize}
+          onCharSpacingChange={setActiveCharSpacing}
+          onLineHeightChange={setActiveLineHeight}
+          onStrokeWidthChange={setActiveStrokeWidth}
         />
 
         {/* Center: canvas */}
         <main
           ref={centerRef}
-          className="flex-1 overflow-hidden flex items-center justify-center bg-zinc-800"
-          style={{
-            backgroundImage:  'radial-gradient(circle, #3f3f46 1px, transparent 1px)',
-            backgroundSize:   '20px 20px',
-          }}
+          className="flex-1 overflow-hidden rounded-2xl border border-black bg-[#eeeeee] flex items-center justify-center py-6 relative"
         >
           <RisoCanvas
             ref={canvasRef}
             canvasSize={canvasSize}
             scale={scale}
+            multiSelectRect={multiSelectRect}
+            onAlignItems={alignSelectedItems}
+            onBackgroundRandom={setBackgroundRandom}
+            onBackgroundPrev={setBackgroundPrev}
+            onBackgroundNext={setBackgroundNext}
+            backgroundNavEnabled={backgroundUrlsLength > 0}
+            onQuestionsClick={handleQuestionsClick}
           />
         </main>
 
@@ -140,31 +160,24 @@ export default function App() {
           inkLayers={inkLayers}
           activeId={activeId}
           onRemoveObject={removeLayer}
+          onClearCanvas={clearCanvas}
           onToggleInkLayer={toggleInkLayer}
           onRemoveInkLayer={removeInkLayer}
           onMoveInkLayerUp={moveInkLayerUp}
           onMoveInkLayerDown={moveInkLayerDown}
+          onRandomizeShift={randomizeLayerShift}
         />
       </div>
-
-      {/* ── Submit modal ── */}
-      <SubmitModal
-        isOpen={submitOpen}
-        onClose={() => setSubmitOpen(false)}
-        getDataUrl={exportPng}
-        layerCount={inkLayers.length}
-        canvasSize={canvasSize}
-      />
 
       {/* ── Toast ── */}
       {toast && (
         <div
-          className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full text-sm font-medium shadow-lg z-50 ${
+          className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full text-sm font-medium border border-black z-50 ${
             toast.type === 'success'
-              ? 'bg-amber-400 text-black'
+              ? 'bg-[#eeeeee] text-black'
               : toast.type === 'error'
-              ? 'bg-red-500 text-white'
-              : 'bg-zinc-700 text-white'
+              ? 'bg-[#eeeeee] text-black'
+              : 'bg-[#eeeeee] text-black'
           }`}
         >
           {toast.msg}

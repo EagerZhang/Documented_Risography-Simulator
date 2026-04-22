@@ -25,12 +25,7 @@ export const CANVAS_SIZES = [
 ];
 
 export const RISO_FONTS = [
-  { id: 'space-mono',       name: 'Space Mono',       family: "'Space Mono', monospace" },
-  { id: 'playfair',         name: 'Playfair Display', family: "'Playfair Display', serif" },
-  { id: 'bebas-neue',       name: 'Bebas Neue',       family: "'Bebas Neue', sans-serif" },
-  { id: 'dm-serif',         name: 'DM Serif Display', family: "'DM Serif Display', serif" },
-  { id: 'inter',            name: 'Inter',            family: "'Inter', sans-serif" },
-  { id: 'courier-prime',    name: 'Courier Prime',    family: "'Courier Prime', monospace" },
+  { id: 'times-new-roman', name: 'Times New Roman', family: "'Times New Roman', Times, serif" },
 ];
 
 /** Hex string → { r, g, b } */

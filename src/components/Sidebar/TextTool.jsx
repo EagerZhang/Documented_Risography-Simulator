@@ -1,63 +1,73 @@
 import { useState } from 'react';
-import { RISO_FONTS } from '../../utils/risoColors';
 import ColorPicker from './ColorPicker';
 
-export default function TextTool({ onAddText, inkColor, onInkColorChange }) {
-  const [text,       setText]       = useState('');
-  const [fontId,     setFontId]     = useState(RISO_FONTS[0].id);
-  const [fontSize,   setFontSize]   = useState(48);
+const FONT_FAMILY = "'Times New Roman', Times, serif";
 
-  const selectedFont = RISO_FONTS.find((f) => f.id === fontId) || RISO_FONTS[0];
+export default function TextTool({ onAddText, inkColor, onInkColorChange }) {
+  const [text,        setText]        = useState('');
+  const [fontSize,    setFontSize]    = useState(48);
+  const [charSpacing, setCharSpacing] = useState(0);
+  const [lineHeight,  setLineHeight]  = useState(1.16);
 
   const handleAdd = () => {
-    onAddText(text || 'Type here', selectedFont.family, inkColor, fontSize);
+    onAddText(text || 'Type here', FONT_FAMILY, inkColor, fontSize, charSpacing, lineHeight);
     setText('');
   };
 
   return (
     <div className="space-y-4">
+      {/* Text input */}
       <div>
-        <p className="text-xs text-zinc-400 uppercase tracking-widest mb-2">Text Content</p>
+        <p className="text-[10px] text-black/80 uppercase tracking-wider mb-2">Text Content</p>
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder="Enter text..."
           rows={2}
-          className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-100 resize-none focus:outline-none focus:border-amber-400 placeholder:text-zinc-600"
+          className="w-full bg-[#eeeeee] border border-black rounded-lg px-2.5 py-2 text-sm text-black resize-none focus:outline-none focus:border-black placeholder:text-black/50"
+          style={{ fontFamily: FONT_FAMILY }}
         />
       </div>
 
-      <div>
-        <p className="text-xs text-zinc-400 uppercase tracking-widest mb-2">Font</p>
-        <div className="space-y-1">
-          {RISO_FONTS.map((font) => (
-            <button
-              key={font.id}
-              onClick={() => setFontId(font.id)}
-              className={`w-full text-left px-2 py-1.5 rounded text-sm transition-colors border ${
-                fontId === font.id
-                  ? 'bg-zinc-700 border-amber-400 text-white'
-                  : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500'
-              }`}
-              style={{ fontFamily: font.family }}
-            >
-              {font.name}
-            </button>
-          ))}
-        </div>
+      {/* Font label */}
+      <div className="px-2.5 py-2 bg-[#eeeeee] border border-black rounded-lg text-sm text-black/80"
+           style={{ fontFamily: FONT_FAMILY }}>
+        Times New Roman
       </div>
 
+      {/* Font size */}
       <div>
-        <p className="text-xs text-zinc-400 uppercase tracking-widest mb-2">
-          Font Size — <span className="text-zinc-200">{fontSize}px</span>
+        <p className="text-[10px] text-black/80 uppercase tracking-wider mb-2">
+          Size — <span className="text-black">{fontSize}px</span>
         </p>
         <input
-          type="range"
-          min={12}
-          max={160}
-          value={fontSize}
+          type="range" min={12} max={160} value={fontSize}
           onChange={(e) => setFontSize(Number(e.target.value))}
-          className="w-full accent-amber-400"
+          className="w-full accent-gray-800 h-1.5"
+        />
+      </div>
+
+      {/* Kerning (tracking) */}
+      <div>
+        <p className="text-[10px] text-black/80 uppercase tracking-wider mb-2">
+          Kerning — <span className="text-black">{charSpacing > 0 ? `+${charSpacing}` : charSpacing}</span>
+        </p>
+        <input
+          type="range" min={-100} max={600} step={10} value={charSpacing}
+          onChange={(e) => setCharSpacing(Number(e.target.value))}
+          className="w-full accent-gray-800 h-1.5"
+        />
+      </div>
+
+      {/* Line height */}
+      <div>
+        <p className="text-[10px] text-black/80 uppercase tracking-wider mb-2">
+          Line Height — <span className="text-black">{lineHeight.toFixed(2)}</span>
+        </p>
+        <input
+          type="range" min={0.8} max={3.0} step={0.05} value={lineHeight}
+          onChange={(e) => setLineHeight(Number(e.target.value))}
+          className="w-full accent-gray-800 h-1.5"
         />
       </div>
 
@@ -65,7 +75,7 @@ export default function TextTool({ onAddText, inkColor, onInkColorChange }) {
 
       <button
         onClick={handleAdd}
-        className="w-full py-2 rounded bg-amber-400 hover:bg-amber-300 text-black text-sm font-bold transition-colors"
+        className="w-full py-2 rounded-lg bg-[#eeeeee] hover:bg-black hover:text-white text-black text-sm font-medium border border-black transition-colors"
       >
         Add Text
       </button>
